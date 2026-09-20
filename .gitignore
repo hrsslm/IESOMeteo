@@ -1,0 +1,9 @@
+# Python caches, virtualenvs, OS junk.
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+# Raw IESO reports are big and re-downloadable, so they stay out of git.
+# The processed CSVs in data/processed/ ARE committed: IESO's real-time
+# reports expire, so the processed files are the archival copy.
+data/raw/

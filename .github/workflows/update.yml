@@ -1,0 +1,85 @@
+# Hourly data update pipeline (M4).
+#
+# What this does, once an hour, with no servers and no API keys:
+#   1. Checks out the repo and installs the pinned Python dependencies.
+#   2. Restores the previous run's data/raw/ downloads from a cache, so the
+#      scraper only re-downloads the small "rolling" files that changed
+#      instead of the whole multi-year history every hour.
+#   3. Runs the full pipeline: IESO scraper -> weather fetch -> charts ->
+#      dashboard render.
+#   4. Commits data/processed/ and docs/ back to the repo and pushes.
+#      GitHub Pages then serves the updated docs/index.html automatically.
+#
+# The commit step needs `permissions: contents: write` below; the push uses
+# the repository's built-in GITHUB_TOKEN, so no personal token is needed.
+
+name: Hourly data update
+
+on:
+  schedule:
+    # Cron times are UTC. IESO publishes each hour's reports a few minutes
+    # after the hour, so minute 35 gives the new files time to land.
+    - cron: "35 * * * *"
+  workflow_dispatch:  # also allow manual runs from the Actions tab
+
+permissions:
+  contents: write  # needed for the commit-and-push step at the end
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"  # cache downloaded packages between runs
+
+      - name: Current week number
+        id: week
+        # The raw-download cache key rotates weekly so caches stay fresh;
+        # restore-keys lets a new week fall back to last week's cache.
+        run: echo "num=$(date -u +%Y-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore raw download cache
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: ieso-raw-${{ steps.week.outputs.num }}
+          restore-keys: |
+            ieso-raw-
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Refresh IESO data
+        run: python3 -u src/ieso_scraper.py
+
+      - name: Refresh weather data
+        run: python3 -u src/weather_fetch.py
+
+      - name: Rebuild charts
+        run: python3 -u src/make_charts.py
+
+      - name: Render dashboard
+        run: python3 -u src/render_dashboard.py
+
+      - name: Commit and push updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # data/raw/ is git-ignored, so this only stages the processed
+          # CSVs and the dashboard/chart HTML.
+          git add data/processed docs
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Hourly data update: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
