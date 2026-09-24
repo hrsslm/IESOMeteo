@@ -55,14 +55,18 @@ CHARTS = [
     (
         "kincardine_wind.html",
         "Wind: Kincardine vs Provincial Output",
-        "Wind speed at 100 m in Kincardine (near the Bruce nuclear/wind hub) "
-        "against total province-wide wind generation, hour by hour.",
+        "Dual-axis time series: total province-wide wind generation (left axis) "
+        "against 100 m wind speed at the single Kincardine station (right axis). "
+        "Main lines are 7-day rolling means over faint hourly points; drag the "
+        "range slider to zoom.",
     ),
     (
         "solar_irradiance.html",
         "Solar: Toronto Irradiance vs Output",
-        "Shortwave solar irradiance in Toronto against total province-wide "
-        "solar generation, hour by hour.",
+        "Dual-axis time series: total province-wide solar generation (left axis) "
+        "against shortwave irradiance at the single Toronto station (right axis). "
+        "Main lines are 7-day rolling means over faint hourly points; drag the "
+        "range slider to zoom.",
     ),
 ]
 

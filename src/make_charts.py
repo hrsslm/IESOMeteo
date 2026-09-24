@@ -7,11 +7,17 @@ Charts:
       temperature, points coloured by season, vertical reference line at 18 C
   (b) demand_timeseries.html     - hourly Ontario demand, 2003 to present
   (c) fuelmix_stacked_area.html  - daily-average generation by fuel, stacked
-  (d) kincardine_wind.html       - Kincardine wind speed vs wind output
-  (e) solar_irradiance.html      - Toronto solar irradiance vs solar output
+  (d) kincardine_wind.html       - dual-axis time series: Ontario-wide wind
+      output (left axis) vs Kincardine 100 m wind speed (right axis),
+      7-day rolling means over faint hourly points, range slider with a
+      default view of the most recent 90 days
+  (e) solar_irradiance.html      - dual-axis time series: Ontario-wide solar
+      output (left axis) vs Toronto shortwave irradiance (right axis),
+      same layout as the wind chart
 
 Joins are done on timestamps converted to UTC, so daylight-saving
-transitions line up exactly between the IESO and weather files.
+transitions line up exactly between the IESO and weather files. The
+time-series charts then display in America/Toronto local time.
 
 Run:  python3 src/make_charts.py
 Needs: data/processed/{demand_hourly,fuelmix_hourly,weather_hourly}.csv
@@ -21,6 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -146,40 +153,74 @@ def chart_fuelmix_stacked_area(fuelmix):
     return fig
 
 
-def chart_kincardine_wind(fuelmix, weather):
-    """(d) Kincardine wind speed vs actual province-wide wind output."""
-    kincardine = weather[weather["location"] == "Kincardine"][["ts", "wind_speed_100m"]]
-    merged = fuelmix[["ts", "wind"]].merge(kincardine, on="ts", how="inner")
-    print(f"  (d) Kincardine wind: {len(merged)} overlapping hours")
-    fig = px.scatter(
-        merged,
-        x="wind_speed_100m",
-        y="wind",
-        opacity=0.45,
-        title="Kincardine wind speed vs Ontario wind output",
-        labels={
-            "wind_speed_100m": "Wind speed at 100 m (m/s)",
-            "wind": "Wind output (MW)",
-        },
-    )
-    return fig
+def merge_station(fuelmix, weather, location, fuel_col, weather_col):
+    """Join one fuel column with one weather-station column on UTC
+    timestamps -- exactly like the old scatter charts -- and add a
+    Toronto-local datetime column for the time-series x-axis."""
+    station = weather[weather["location"] == location][["ts", weather_col]]
+    merged = fuelmix[["ts", fuel_col]].merge(station, on="ts", how="inner")
+    merged = merged.sort_values("ts").reset_index(drop=True)
+    merged["ts_local"] = merged["ts"].dt.tz_convert("America/Toronto")
+    return merged
 
 
-def chart_solar_irradiance(fuelmix, weather):
-    """(e) Toronto solar irradiance vs actual province-wide solar output."""
-    toronto = weather[weather["location"] == "Toronto"][["ts", "shortwave_radiation"]]
-    merged = fuelmix[["ts", "solar"]].merge(toronto, on="ts", how="inner")
-    print(f"  (e) solar irradiance: {len(merged)} overlapping hours")
-    fig = px.scatter(
-        merged,
-        x="shortwave_radiation",
-        y="solar",
-        opacity=0.45,
-        title="Toronto solar irradiance vs Ontario solar output",
-        labels={
-            "shortwave_radiation": "Solar irradiance (W/m²)",
-            "solar": "Solar output (MW)",
-        },
+def chart_output_vs_weather(merged, fuel_col, weather_col, title,
+                            output_name, weather_name,
+                            output_unit, weather_unit):
+    """Dual-axis time series: province-wide grid output on the left axis,
+    single-station weather on the right axis.
+
+    The main lines are 7-day rolling means (168 hourly points); raw
+    hourly points sit underneath at ~10% opacity for context. A range
+    slider lets the reader zoom, and the default view shows the most
+    recent 90 days."""
+    print(f"  {title}: {len(merged)} overlapping hours")
+
+    # 7-day rolling mean of hourly data = 168 points. min_periods=1 so
+    # the line starts at the first hour instead of leaving a gap.
+    for col in (fuel_col, weather_col):
+        merged[f"{col}_7d"] = merged[col].rolling(168, min_periods=1).mean()
+
+    end = merged["ts_local"].max()
+    start = end - pd.Timedelta(days=90)
+
+    out_color = "#1f77b4"  # blue for grid output
+    wx_color = "#ff7f0e"   # orange for weather
+
+    fig = go.Figure()
+
+    # Faint raw hourly points: WebGL (Scattergl) keeps them fast.
+    fig.add_trace(go.Scattergl(
+        x=merged["ts_local"], y=merged[fuel_col], yaxis="y",
+        mode="markers", marker=dict(size=3, color=out_color),
+        opacity=0.1,
+        name=f"{output_name} ({output_unit}, hourly)"))
+    fig.add_trace(go.Scattergl(
+        x=merged["ts_local"], y=merged[weather_col], yaxis="y2",
+        mode="markers", marker=dict(size=3, color=wx_color),
+        opacity=0.1,
+        name=f"{weather_name} ({weather_unit}, hourly, single station)"))
+
+    # Main 7-day rolling-mean lines.
+    fig.add_trace(go.Scatter(
+        x=merged["ts_local"], y=merged[f"{fuel_col}_7d"], yaxis="y",
+        mode="lines", line=dict(color=out_color, width=2),
+        name=f"{output_name} ({output_unit}, 7-day mean)"))
+    fig.add_trace(go.Scatter(
+        x=merged["ts_local"], y=merged[f"{weather_col}_7d"], yaxis="y2",
+        mode="lines", line=dict(color=wx_color, width=2),
+        name=f"{weather_name} ({weather_unit}, 7-day mean, single station)"))
+
+    fig.update_layout(
+        title=title,
+        xaxis=dict(title="Date (Toronto time)",
+                   rangeslider=dict(visible=True),
+                   range=[start, end]),
+        yaxis=dict(title=f"{output_name} ({output_unit})"),
+        yaxis2=dict(title=f"{weather_name} ({weather_unit})",
+                    overlaying="y", side="right"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="center", x=0.5),
     )
     return fig
 
@@ -204,10 +245,20 @@ def main():
          "demand_timeseries.html", "demand time series")
     save(chart_fuelmix_stacked_area(fuelmix),
          "fuelmix_stacked_area.html", "fuel-mix stacked area")
-    save(chart_kincardine_wind(fuelmix, weather),
-         "kincardine_wind.html", "Kincardine wind")
-    save(chart_solar_irradiance(fuelmix, weather),
-         "solar_irradiance.html", "solar irradiance")
+    wind = merge_station(fuelmix, weather, "Kincardine", "wind", "wind_speed_100m")
+    save(chart_output_vs_weather(
+        wind, "wind", "wind_speed_100m",
+        "Ontario wind output vs Kincardine wind speed.",
+        "Ontario-wide wind output", "Kincardine station wind speed",
+        "MW", "m/s"),
+        "kincardine_wind.html", "Kincardine wind")
+    solar = merge_station(fuelmix, weather, "Toronto", "solar", "shortwave_radiation")
+    save(chart_output_vs_weather(
+        solar, "solar", "shortwave_radiation",
+        "Ontario solar output vs Toronto solar irradiance.",
+        "Ontario-wide solar output", "Toronto station irradiance",
+        "MW", "W/m²"),
+        "solar_irradiance.html", "solar irradiance")
 
     print("\nDone.")
 
