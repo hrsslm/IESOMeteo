@@ -31,6 +31,18 @@ DOCS_DIR = BASE_DIR / "docs"
 
 TORONTO = ZoneInfo("America/Toronto")
 
+# Freshness thresholds, in days, one per card's feed. The pipeline runs
+# weekly, so a feed is "stale" only when its data is older than one full
+# week plus its normal publication lag: IESO grid files and the realtime
+# price land about a day behind real time, while the Open-Meteo ERA5
+# archive used for weather lags about 5 days.
+FRESHNESS_DAYS = {
+    "demand": 8,    # Ontario demand card
+    "fuelmix": 8,   # renewable + non-emitting share cards
+    "price": 8,     # Ontario zonal price card
+    "weather": 13,  # Toronto temperature card
+}
+
 # The five M2 charts, in display order: (file, title, description).
 CHARTS = [
     (
@@ -115,6 +127,24 @@ def fmt_or_unavailable(value, template):
     return template.format(value)
 
 
+def freshness_badge(stamp, feed):
+    """Return a "fresh"/"stale" badge for a card's data timestamp.
+
+    Compares the data's age against the feed's threshold in FRESHNESS_DAYS.
+    An empty badge (no data or unparsable timestamp) means we cannot tell.
+    """
+    if not stamp:
+        return ""
+    try:
+        age_days = (datetime.now(TORONTO)
+                    - datetime.fromisoformat(stamp).astimezone(TORONTO)
+                    ).total_seconds() / 86400
+    except (TypeError, ValueError):
+        return ""
+    cls = "fresh" if age_days <= FRESHNESS_DAYS[feed] else "stale"
+    return f' <span class="badge {cls}">{cls}</span>'
+
+
 def main():
     print("Loading processed data...")
     demand = load_csv("demand_hourly.csv")
@@ -149,19 +179,20 @@ def main():
 
     price_val, price_ts = latest_value(price, "ontario_zonal_price")
 
-    def card(label, value_text, stamp):
-        asof = f'<div class="asof">as of {pretty_time(stamp)}</div>' if stamp else ""
+    def card(label, value_text, stamp, feed):
+        asof = (f'<div class="asof">as of {pretty_time(stamp)}'
+                f'{freshness_badge(stamp, feed)}</div>') if stamp else ""
         return (
             f'<div class="card"><div class="value">{value_text}</div>'
             f'<div class="label">{label}</div>{asof}</div>'
         )
 
     cards = [
-        card("Ontario demand", fmt_or_unavailable(demand_mw, "{:,.0f} MW"), demand_ts),
-        card("Toronto temperature", fmt_or_unavailable(temp_c, "{:.1f} °C"), temp_ts),
-        card("Renewable share", fmt_or_unavailable(renew_pct, "{:.1f}%"), fuelmix_ts),
-        card("Non-emitting share", fmt_or_unavailable(nonemit_pct, "{:.1f}%"), fuelmix_ts),
-        card("Ontario zonal price", fmt_or_unavailable(price_val, "${:.2f}/MWh"), price_ts),
+        card("Ontario demand", fmt_or_unavailable(demand_mw, "{:,.0f} MW"), demand_ts, "demand"),
+        card("Toronto temperature", fmt_or_unavailable(temp_c, "{:.1f} °C"), temp_ts, "weather"),
+        card("Renewable share", fmt_or_unavailable(renew_pct, "{:.1f}%"), fuelmix_ts, "fuelmix"),
+        card("Non-emitting share", fmt_or_unavailable(nonemit_pct, "{:.1f}%"), fuelmix_ts, "fuelmix"),
+        card("Ontario zonal price", fmt_or_unavailable(price_val, "${:.2f}/MWh"), price_ts, "price"),
     ]
 
     chart_blocks = []
@@ -202,6 +233,12 @@ def main():
   .card .value {{ font-size: 1.9rem; font-weight: 700; color: #0b3d5c; }}
   .card .label {{ margin-top: 0.35rem; font-size: 0.95rem; color: #444; }}
   .card .asof {{ margin-top: 0.35rem; font-size: 0.8rem; color: #888; }}
+  .badge {{
+    display: inline-block; font-size: 0.72rem; font-weight: 600;
+    padding: 0.1rem 0.5rem; border-radius: 999px; margin-left: 0.25rem;
+  }}
+  .badge.fresh {{ background: #e6f4ea; color: #1b7a2f; }}
+  .badge.stale {{ background: #fdecea; color: #b3261e; }}
   .chart {{
     background: #fff; border-radius: 10px; padding: 1.25rem;
     box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 1.5rem;
@@ -235,15 +272,22 @@ def main():
         realtime Ontario zonal price). Weather: Open-Meteo archive API.</li>
     <li>Each headline card shows its own timestamp because the feeds update
         on different schedules (grid data lags ~1 day, Open-Meteo weather ~5
-        days, the realtime price is minutes old).</li>
+        days, the realtime price is minutes old). The fresh/stale badge
+        compares the data's age against its feed's threshold: 8 days for
+        grid data and price (one week plus ~1 day of publication lag),
+        13 days for weather (one week plus ~5 days of archive lag).</li>
     <li>Renewable share = (biofuel + hydro + solar + wind) / total reported
         generation for the latest hour. Non-emitting share adds nuclear to
         the numerator.</li>
     <li>Ontario zonal price = hourly average of the realtime 5-minute
         Ontario zonal energy price (the hourly average is also the value
-        IESO uses for settlement). Each hourly run appends the latest hour
-        to data/processed/price_hourly.csv, so the repo keeps a growing
-        price history.</li>
+        IESO uses for settlement). Each weekly run backfills every missing
+        hour since the previous run into data/processed/price_hourly.csv,
+        so the repo keeps a growing price history.</li>
+    <li>The pipeline runs weekly (Mondays 08:35 UTC) on GitHub Actions.
+        data/processed/manifest.json records which IESO files are already
+        incorporated, so each run downloads only new files; a missed week
+        is fully backfilled on the next run.</li>
     <li>All timestamps are America/Toronto local time.</li>
   </ul>
 </footer>
